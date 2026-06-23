@@ -2,7 +2,7 @@
 
 READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, and view placeholder download status screens.
 
-This phase is intentionally limited to the Django + React foundation plus Redis connection checks and Django cache setup. It does not include AI, Celery, ETL jobs, WebSockets, Docker, S3, AutoGen, or deployment.
+This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, and Celery worker wiring. It does not include AI, ETL jobs, WebSockets, Docker, S3, AutoGen, or deployment.
 
 ## Tech Stack
 
@@ -11,6 +11,7 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 - Cross-origin/local dev: django-cors-headers
 - Environment variables: python-dotenv
 - Cache/broker foundation: Redis with django-redis
+- Background worker foundation: Celery with Redis broker/result backend
 - Frontend: React, Vite, React Router, Axios, Zustand
 - Styling: Tailwind CSS
 
@@ -200,6 +201,8 @@ Expected local value:
 
 ```env
 REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
 ```
 
 ### macOS With Homebrew
@@ -310,6 +313,62 @@ Expected response:
   "value": "hello from redis"
 }
 ```
+
+## Celery Local Setup
+
+Celery is wired to Django and uses Redis as the broker and result backend. No production tasks or scheduled jobs are included yet.
+
+Make sure Redis is running first:
+
+```bash
+brew services start redis
+redis-cli ping
+```
+
+Expected:
+
+```text
+PONG
+```
+
+Start Django in terminal 1:
+
+```bash
+source .venv/bin/activate
+python manage.py runserver
+```
+
+Start the Celery worker in terminal 2:
+
+```bash
+source .venv/bin/activate
+celery -A readyfeed_ai worker -l info
+```
+
+Test Celery from terminal 3:
+
+```bash
+source .venv/bin/activate
+python manage.py shell
+```
+
+Inside the Django shell:
+
+```python
+from core.tasks import debug_task
+
+result = debug_task.delay("READYFEED Celery works")
+result.id
+result.get(timeout=10)
+```
+
+Expected:
+
+```python
+'READYFEED Celery works'
+```
+
+If `result.get(timeout=10)` times out, check that Redis is running and the Celery worker terminal is still active.
 
 ## Frontend Setup
 

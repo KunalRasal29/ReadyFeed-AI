@@ -3,6 +3,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import CommuteWindow, ContentSource, DownloadItem, Subscription
+from core.tasks import debug_task
 
 
 User = get_user_model()
@@ -168,3 +169,9 @@ class ApiRoutePermissionTests(TestCase):
                 "value": "hello from redis",
             },
         )
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    def test_debug_task_runs_in_eager_mode(self):
+        result = debug_task.delay("READYFEED Celery works")
+
+        self.assertEqual(result.get(timeout=5), "READYFEED Celery works")

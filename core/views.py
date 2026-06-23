@@ -23,6 +23,7 @@ from core.serializers import (
     UserPreferenceSerializer,
     UserSerializer,
 )
+from core.tasks import prepare_download_item
 
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")
@@ -208,6 +209,48 @@ class DownloadItemViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+    @action(detail=True, methods=["post"], url_path="prepare")
+    def prepare(self, request, pk=None):
+        download_item = self.get_object()
+
+        if download_item.status == DownloadItem.STATUS_READY:
+            return Response(
+                {
+                    "detail": "Download item is already ready.",
+                    "download": self.get_serializer(download_item).data,
+                }
+            )
+
+        if download_item.status == DownloadItem.STATUS_DOWNLOADING:
+            return Response(
+                {
+                    "detail": "Download item is already being prepared.",
+                    "download": self.get_serializer(download_item).data,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        try:
+            async_result = prepare_download_item.delay(download_item.pk)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Could not enqueue the offline preparation task.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        download_item.refresh_from_db()
+        return Response(
+            {
+                "detail": "Offline preparation task queued.",
+                "task_id": async_result.id,
+                "download": self.get_serializer(download_item).data,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class CommuteWindowViewSet(viewsets.ModelViewSet):

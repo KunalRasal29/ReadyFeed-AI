@@ -139,7 +139,17 @@ class DownloadItemSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "user", "source_detail", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "user",
+            "source_detail",
+            "local_file_path",
+            "file_size_bytes",
+            "error_message",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class CommuteWindowSerializer(serializers.ModelSerializer):

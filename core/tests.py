@@ -1,9 +1,13 @@
+from pathlib import Path
+import tempfile
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import CommuteWindow, ContentSource, DownloadItem, Subscription
-from core.tasks import debug_task
+from core.tasks import debug_task, prepare_download_item
 
 
 User = get_user_model()
@@ -175,3 +179,71 @@ class ApiRoutePermissionTests(TestCase):
         result = debug_task.delay("READYFEED Celery works")
 
         self.assertEqual(result.get(timeout=5), "READYFEED Celery works")
+
+    def test_prepare_download_task_creates_offline_file(self):
+        download_item = DownloadItem.objects.create(
+            user=self.user,
+            source=self.source,
+            title="Offline News Brief",
+            description="A short summary for the train.",
+            original_url="https://example.com/news/offline-brief",
+        )
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(
+                CELERY_TASK_ALWAYS_EAGER=True,
+                MEDIA_ROOT=Path(media_root),
+            ):
+                result = prepare_download_item.delay(download_item.id)
+
+                self.assertEqual(result.get(timeout=5)["status"], DownloadItem.STATUS_READY)
+
+                download_item.refresh_from_db()
+                prepared_path = Path(download_item.local_file_path)
+                if not prepared_path.is_absolute():
+                    prepared_path = settings.BASE_DIR / prepared_path
+
+                self.assertTrue(prepared_path.exists())
+
+        self.assertEqual(download_item.status, DownloadItem.STATUS_READY)
+        self.assertGreater(download_item.file_size_bytes, 0)
+        self.assertEqual(download_item.error_message, "")
+
+    def test_prepare_download_endpoint_queues_user_item(self):
+        download_item = DownloadItem.objects.create(
+            user=self.user,
+            source=self.source,
+            title="Endpoint Prepared Item",
+            original_url="https://example.com/news/endpoint-prepared",
+        )
+
+        client = APIClient()
+        client.login(username="route_user", password="test-password-123")
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(
+                CELERY_TASK_ALWAYS_EAGER=True,
+                MEDIA_ROOT=Path(media_root),
+            ):
+                response = client.post(f"/api/downloads/{download_item.id}/prepare/")
+
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(response.json()["detail"], "Offline preparation task queued.")
+
+        download_item.refresh_from_db()
+        self.assertEqual(download_item.status, DownloadItem.STATUS_READY)
+
+    def test_prepare_download_endpoint_cannot_access_another_users_item(self):
+        other_download = DownloadItem.objects.create(
+            user=self.other_user,
+            source=self.source,
+            title="Other User Item",
+            original_url="https://example.com/news/other",
+        )
+
+        client = APIClient()
+        client.login(username="route_user", password="test-password-123")
+
+        response = client.post(f"/api/downloads/{other_download.id}/prepare/")
+
+        self.assertEqual(response.status_code, 404)

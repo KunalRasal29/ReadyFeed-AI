@@ -1,8 +1,8 @@
 # READYFEED AI
 
-READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, and view placeholder download status screens.
+READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, and prepare starter offline content packages.
 
-This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, and Celery worker wiring. It does not include AI, ETL jobs, WebSockets, Docker, S3, AutoGen, or deployment.
+This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, and a Celery worker task for preparing offline download items. It does not include AI, ETL feed ingestion, WebSockets, Docker, S3, AutoGen, or deployment.
 
 ## Tech Stack
 
@@ -11,7 +11,7 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 - Cross-origin/local dev: django-cors-headers
 - Environment variables: python-dotenv
 - Cache/broker foundation: Redis with django-redis
-- Background worker foundation: Celery with Redis broker/result backend
+- Background work: Celery with Redis broker/result backend
 - Frontend: React, Vite, React Router, Axios, Zustand
 - Styling: Tailwind CSS
 
@@ -19,7 +19,7 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 
 ```text
 .
-├── core/                  # Django app: models, serializers, views, admin, tests
+├── core/                  # Django app: models, serializers, views, tasks, admin, tests
 ├── frontend/              # Vite React app
 │   ├── src/api/           # Axios client and API error helpers
 │   ├── src/components/    # Layout, protected route, shared UI pieces
@@ -316,7 +316,7 @@ Expected response:
 
 ## Celery Local Setup
 
-Celery is wired to Django and uses Redis as the broker and result backend. No production tasks or scheduled jobs are included yet.
+Celery is wired to Django and uses Redis as the broker and result backend. The first real task prepares a `DownloadItem` for offline use by writing a small local package under `media/offline_items/`, then updating its status, file path, and file size in the database.
 
 Make sure Redis is running first:
 
@@ -370,6 +370,59 @@ Expected:
 
 If `result.get(timeout=10)` times out, check that Redis is running and the Celery worker terminal is still active.
 
+### Prepare An Offline Download Item
+
+Create a sample queued item from the Django shell:
+
+```bash
+source .venv/bin/activate
+python manage.py shell
+```
+
+Inside the shell:
+
+```python
+from django.contrib.auth import get_user_model
+from core.models import ContentSource, DownloadItem
+
+User = get_user_model()
+user = User.objects.get(username="Sharayu")
+source = ContentSource.objects.filter(is_active=True).first()
+
+item = DownloadItem.objects.create(
+    user=user,
+    source=source,
+    title="Morning offline brief",
+    description="A local test item prepared by Celery.",
+    original_url="https://example.com/morning-offline-brief",
+)
+item.id
+```
+
+Then either open the React Downloads page and click `Prepare`, or call the API:
+
+```bash
+curl -b cookies.txt \
+  -H "X-CSRFToken: $CSRF" \
+  -X POST \
+  http://localhost:8000/api/downloads/ITEM_ID/prepare/
+```
+
+After the worker runs, refresh `/downloads` in React or check the shell:
+
+```python
+item.refresh_from_db()
+item.status
+item.local_file_path
+item.file_size_bytes
+```
+
+Expected status:
+
+```python
+'ready'
+```
+
 ## Frontend Setup
 
 Open a second terminal:
@@ -420,6 +473,7 @@ Requires login:
 - `GET|PATCH /api/preferences/me/`
 - `GET|POST /api/subscriptions/`
 - `GET|POST /api/downloads/`
+- `POST /api/downloads/{id}/prepare/`
 - `GET|POST /api/commute/`
 - `GET /api/system/redis-health/`
 - `POST /api/system/cache-test/`
@@ -474,6 +528,24 @@ Run:
 ```bash
 source .venv/bin/activate
 python manage.py seed_defaults
+```
+
+Prepare action says the task could not be queued:
+
+Make sure Redis is running and `REDIS_URL` is set in `.env`:
+
+```bash
+brew services start redis
+redis-cli ping
+```
+
+The download item stays queued or downloading:
+
+Make sure the Celery worker is running in a separate terminal:
+
+```bash
+source .venv/bin/activate
+celery -A readyfeed_ai worker -l info
 ```
 
 Port already in use:

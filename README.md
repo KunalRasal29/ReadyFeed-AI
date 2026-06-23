@@ -423,6 +423,31 @@ Expected status:
 'ready'
 ```
 
+### Discover Items From Supported Sources
+
+Supported sources can be previewed without saving anything:
+
+```text
+GET /api/system/source-preview/{source_id}/
+```
+
+Discovery runs through Celery and creates queued `DownloadItem` rows for the logged-in user:
+
+```text
+POST /api/sources/{source_id}/discover/
+```
+
+The normal flow is:
+
+1. Open `http://localhost:5173/subscriptions`.
+2. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` source.
+3. Click `Preview` to inspect sample items.
+4. Click `Discover` to queue source discovery.
+5. Open `http://localhost:5173/downloads`.
+6. Click `Prepare` on discovered queued items.
+
+Discovery currently supports Wikimedia Commons, NASA Images, Gutendex / Project Gutenberg, The Met Open Access, and Art Institute Chicago sources. The adapters capture item-level author/license/source metadata in each `DownloadItem.description` and only create items when the returned file metadata appears cache-compatible.
+
 ## Frontend Setup
 
 Open a second terminal:
@@ -475,8 +500,10 @@ Requires login:
 - `GET|POST /api/subscriptions/`
 - `GET|POST /api/downloads/`
 - `POST /api/downloads/{id}/prepare/`
+- `POST /api/sources/{id}/discover/`
 - `GET|POST /api/commute/`
 - `GET /api/system/redis-health/`
+- `GET /api/system/source-preview/{source_id}/`
 - `POST /api/system/cache-test/`
 
 Compatibility route:
@@ -581,6 +608,14 @@ source .venv/bin/activate
 celery -A readyfeed_ai worker -l info
 ```
 
+Preview says discovery is only available for certain source types:
+
+Use one of the seeded `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` sources. Other cache-allowed APIs are listed now but do not have ingestion adapters yet.
+
+Discover says the task could not be queued:
+
+Make sure Redis and the Celery worker are running. The Discover button creates `DownloadItem` rows in the worker, not in the browser request.
+
 Port already in use:
 
 Stop the old server process, or run Django/Vite on another port and update the Vite proxy if needed.
@@ -614,8 +649,11 @@ npm run build
 8. Confirm the dashboard shows the username and selected topics.
 9. Open Preferences and update topics, max daily items, and max storage.
 10. Open Subscriptions and subscribe to a source.
-11. Confirm the subscription button/status updates immediately.
-12. Unsubscribe from the same source.
-13. Open Downloads and confirm the empty/placeholder download UI loads.
-14. Log out.
-15. Log in again and confirm the session and saved data still work.
+11. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` source and click Preview.
+12. Click Discover and wait for the Celery worker to create queued downloads.
+13. Open Downloads and confirm discovered items appear as queued.
+14. Click Prepare on one queued item and confirm it becomes ready.
+15. Confirm the subscription button/status updates immediately.
+16. Unsubscribe from the same source.
+17. Log out.
+18. Log in again and confirm the session and saved data still work.

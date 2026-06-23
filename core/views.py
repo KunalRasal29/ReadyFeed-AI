@@ -11,6 +11,12 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.ingestion.adapters import (
+    SUPPORTED_SOURCE_TYPES,
+    SourceIngestionError,
+    fetch_source_items,
+    supports_source_discovery,
+)
 from core.models import CommuteWindow, ContentSource, DownloadItem, Subscription, UserPreference
 from core.permissions import IsAdminOrReadOnly, IsOwner
 from core.serializers import (
@@ -23,7 +29,7 @@ from core.serializers import (
     UserPreferenceSerializer,
     UserSerializer,
 )
-from core.tasks import prepare_download_item
+from core.tasks import discover_source_items, prepare_download_item
 
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")
@@ -140,6 +146,41 @@ class CacheTestView(APIView):
         )
 
 
+class SourcePreviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, source_id):
+        try:
+            source = ContentSource.objects.get(pk=source_id, is_active=True)
+        except ContentSource.DoesNotExist:
+            return Response(
+                {"detail": "Content source was not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if source.policy != ContentSource.POLICY_CACHE_ALLOWED:
+            return Response(
+                {"detail": "Only cache-allowed sources can be previewed for discovery."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            items = fetch_source_items(source, limit=5)
+        except SourceIngestionError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "source": ContentSourceSerializer(source).data,
+                "count": len(items),
+                "items": items,
+            }
+        )
+
+
 class UserPreferenceViewSet(viewsets.ModelViewSet):
     serializer_class = UserPreferenceSerializer
     permission_classes = [IsAuthenticated, IsOwner]
@@ -185,6 +226,51 @@ class ContentSourceViewSet(viewsets.ModelViewSet):
         queryset = self.get_queryset().filter(policy=ContentSource.POLICY_CACHE_ALLOWED)
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="discover",
+        permission_classes=[IsAuthenticated],
+    )
+    def discover(self, request, pk=None):
+        source = self.get_object()
+
+        if source.policy != ContentSource.POLICY_CACHE_ALLOWED:
+            return Response(
+                {"detail": "Only cache-allowed sources can run discovery."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not supports_source_discovery(source):
+            return Response(
+                {
+                    "detail": (
+                        f"Discovery is currently available for {SUPPORTED_SOURCE_TYPES} only."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            async_result = discover_source_items.delay(source.pk, request.user.pk)
+        except Exception as exc:
+            return Response(
+                {
+                    "detail": "Could not enqueue the source discovery task.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                "detail": "Source discovery task queued.",
+                "task_id": async_result.id,
+                "source": self.get_serializer(source).data,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class SubscriptionViewSet(viewsets.ModelViewSet):

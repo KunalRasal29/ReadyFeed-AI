@@ -2,15 +2,57 @@ from pathlib import Path
 
 from celery import shared_task
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
+from core.ingestion.adapters import fetch_source_items
 from core.models import ContentSource, DownloadItem
 
 
 @shared_task
 def debug_task(message="hello from celery"):
     return message
+
+
+@shared_task(bind=True)
+def discover_source_items(self, source_id, user_id, limit=10):
+    source = ContentSource.objects.get(pk=source_id)
+    user = get_user_model().objects.get(pk=user_id)
+    discovered_items = fetch_source_items(source, limit=limit)
+    created_count = 0
+    skipped_count = 0
+    download_ids = []
+
+    for item in discovered_items:
+        download_item, created = DownloadItem.objects.get_or_create(
+            user=user,
+            source=source,
+            original_url=item["original_url"],
+            defaults={
+                "title": item["title"][:255],
+                "description": item["description"],
+                "media_url": item["media_url"],
+                "status": DownloadItem.STATUS_QUEUED,
+                "available_from": timezone.now(),
+            },
+        )
+
+        if created:
+            created_count += 1
+            download_ids.append(download_item.id)
+        else:
+            skipped_count += 1
+
+    return {
+        "task_id": self.request.id,
+        "source_id": source_id,
+        "user_id": user_id,
+        "fetched_count": len(discovered_items),
+        "created_count": created_count,
+        "skipped_count": skipped_count,
+        "download_ids": download_ids,
+    }
 
 
 @shared_task(bind=True)

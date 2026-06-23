@@ -1,6 +1,7 @@
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
+from core.ingestion.adapters import supports_source_discovery
 from core.models import (
     CommuteWindow,
     ContentSource,
@@ -70,6 +71,8 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
 
 
 class ContentSourceSerializer(serializers.ModelSerializer):
+    supports_discovery = serializers.SerializerMethodField()
+
     class Meta:
         model = ContentSource
         fields = [
@@ -83,9 +86,13 @@ class ContentSourceSerializer(serializers.ModelSerializer):
             "license_url",
             "attribution_required",
             "usage_notes",
+            "supports_discovery",
             "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "supports_discovery", "created_at"]
+
+    def get_supports_discovery(self, obj):
+        return obj.policy == ContentSource.POLICY_CACHE_ALLOWED and supports_source_discovery(obj)
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):

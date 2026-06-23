@@ -11,6 +11,7 @@ from core.views import (
     CacheTestView,
     RegisterView,
     RedisHealthView,
+    SourcePreviewView,
     SubscriptionViewSet,
     UserPreferenceViewSet,
 )
@@ -31,5 +32,10 @@ urlpatterns = [
     path("auth/me/", MeView.as_view(), name="auth-me"),
     path("system/redis-health/", RedisHealthView.as_view(), name="redis-health"),
     path("system/cache-test/", CacheTestView.as_view(), name="cache-test"),
+    path(
+        "system/source-preview/<int:source_id>/",
+        SourcePreviewView.as_view(),
+        name="source-preview",
+    ),
     path("", include(router.urls)),
 ]

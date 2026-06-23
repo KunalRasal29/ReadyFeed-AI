@@ -8,6 +8,9 @@ export default function Subscriptions() {
   const [subscriptions, setSubscriptions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [pendingSourceId, setPendingSourceId] = useState(null);
+  const [pendingAction, setPendingAction] = useState("");
+  const [previewBySourceId, setPreviewBySourceId] = useState({});
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
   const subscriptionBySourceId = useMemo(() => {
@@ -38,6 +41,7 @@ export default function Subscriptions() {
   const handleToggleSubscription = async (source) => {
     setPendingSourceId(source.id);
     setError("");
+    setNotice("");
     const previousSubscriptions = subscriptions;
 
     try {
@@ -75,6 +79,46 @@ export default function Subscriptions() {
     }
   };
 
+  const supportsDiscovery = (source) => {
+    return Boolean(source.supports_discovery);
+  };
+
+  const handlePreviewSource = async (source) => {
+    const actionId = `preview-${source.id}`;
+    setPendingAction(actionId);
+    setError("");
+    setNotice("");
+
+    try {
+      const { data } = await apiClient.get(`/system/source-preview/${source.id}/`);
+      setPreviewBySourceId((current) => ({
+        ...current,
+        [source.id]: data.items || [],
+      }));
+      setNotice(`Preview loaded for ${source.name}.`);
+    } catch (apiError) {
+      setError(getApiErrorMessage(apiError, "Could not preview that source."));
+    } finally {
+      setPendingAction("");
+    }
+  };
+
+  const handleDiscoverSource = async (source) => {
+    const actionId = `discover-${source.id}`;
+    setPendingAction(actionId);
+    setError("");
+    setNotice("");
+
+    try {
+      await apiClient.post(`/sources/${source.id}/discover/`);
+      setNotice(`Discovery queued for ${source.name}. Check Downloads in a moment.`);
+    } catch (apiError) {
+      setError(getApiErrorMessage(apiError, "Could not queue source discovery."));
+    } finally {
+      setPendingAction("");
+    }
+  };
+
   if (isLoading) {
     return <p className="text-sm text-slate-600">Loading sources...</p>;
   }
@@ -94,11 +138,19 @@ export default function Subscriptions() {
         </div>
       ) : null}
 
+      {notice ? (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+          {notice}
+        </div>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2">
         {sources.length ? sources.map((source) => {
           const subscription = subscriptionBySourceId.get(source.id);
           const isSubscribed = Boolean(subscription);
           const isPending = pendingSourceId === source.id;
+          const canDiscover = supportsDiscovery(source);
+          const previewItems = previewBySourceId[source.id] || [];
 
           return (
             <article key={source.id} className="panel p-5">
@@ -132,18 +184,61 @@ export default function Subscriptions() {
                 <p className="mt-3 text-sm text-slate-500">{source.usage_notes}</p>
               ) : null}
 
-              <button
-                type="button"
-                onClick={() => handleToggleSubscription(source)}
-                className={isSubscribed ? "btn-secondary mt-5" : "btn-primary mt-5"}
-                disabled={isPending}
-              >
-                {isPending
-                  ? "Updating..."
-                  : isSubscribed
-                    ? "Unsubscribe"
-                    : "Subscribe"}
-              </button>
+              {previewItems.length ? (
+                <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Preview
+                  </p>
+                  <ul className="mt-2 space-y-2">
+                    {previewItems.slice(0, 3).map((item) => (
+                      <li key={item.original_url} className="text-sm text-slate-700">
+                        <span className="font-medium text-slate-950">{item.title}</span>
+                        {item.license_name ? (
+                          <span className="block text-xs text-slate-500">
+                            {item.license_name}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="mt-5 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleToggleSubscription(source)}
+                  className={isSubscribed ? "btn-secondary" : "btn-primary"}
+                  disabled={isPending}
+                >
+                  {isPending
+                    ? "Updating..."
+                    : isSubscribed
+                      ? "Unsubscribe"
+                      : "Subscribe"}
+                </button>
+
+                {canDiscover ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handlePreviewSource(source)}
+                      className="btn-secondary"
+                      disabled={pendingAction === `preview-${source.id}`}
+                    >
+                      {pendingAction === `preview-${source.id}` ? "Previewing..." : "Preview"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDiscoverSource(source)}
+                      className="btn-secondary"
+                      disabled={pendingAction === `discover-${source.id}`}
+                    >
+                      {pendingAction === `discover-${source.id}` ? "Queueing..." : "Discover"}
+                    </button>
+                  </>
+                ) : null}
+              </div>
             </article>
           );
         }) : (

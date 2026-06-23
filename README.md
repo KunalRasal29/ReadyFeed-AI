@@ -464,6 +464,7 @@ Public when logged out:
 - `POST /api/auth/register/`
 - `POST /api/auth/login/`
 - `GET /api/sources/`
+- `GET /api/sources/cache-allowed/`
 
 Requires login:
 
@@ -492,11 +493,43 @@ python manage.py seed_defaults
 
 This creates starter content sources for:
 
-- podcasts
-- news
-- memes
+- metadata-only podcasts/news/link feeds
+- at least 50 active `cache_allowed` sources from open/public-domain collections
+- legal metadata for cache-allowed sources, including license name, license URL, attribution flag, and usage notes
 
-The URLs are simple sample feed URLs for local development.
+Open/cache-allowed source groups include:
+
+- NASA Images and Media API searches
+- The Met Open Access API searches
+- Art Institute of Chicago public-domain API searches
+- Library of Congress Free to Use and Reuse JSON sets
+- Gutendex Project Gutenberg public-domain book API searches
+- Wikimedia Commons meme/free-media searches
+
+You can inspect them from:
+
+```text
+GET /api/sources/
+GET /api/sources/cache-allowed/
+```
+
+Important: `cache_allowed` means the source is eligible for local caching, but the downloader should still follow each source's `usage_notes`. Some APIs return mixed records, so future ingestion code must check item-level flags such as `isPublicDomain`, `is_public_domain`, `share_license_status`, `copyright`, or item rights text before writing media to disk.
+
+Do not treat ordinary RSS feeds, news sites, podcast audio, or social media as cache-allowed unless their own terms explicitly permit downloading and offline redistribution.
+
+Reddit and Substack should stay metadata-only unless a specific creator/community grants explicit reusable-license permission. Reddit content is user-owned/licensed to Reddit, not automatically licensed to third-party apps for offline caching. Substack creators own their posts, and Substack's terms restrict crawling/scraping and copying/storing significant portions of the platform.
+
+## Local LLM Timing
+
+Do not download Llama or another local LLM yet. READYFEED should first finish:
+
+1. source ingestion adapters
+2. item-level license checks
+3. download throttling and retry rules
+4. storage quotas and cleanup
+5. recommendation inputs from real downloaded items
+
+Add a local LLM later when the app has clean, legal, cached content to summarize or rank.
 
 ## Common Errors And Fixes
 

@@ -1,8 +1,10 @@
 from pathlib import Path
 import tempfile
+from io import StringIO
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -139,6 +141,48 @@ class ApiRoutePermissionTests(TestCase):
             "http://localhost:5173",
         )
         self.assertEqual(response["access-control-allow-credentials"], "true")
+
+    def test_cache_allowed_sources_endpoint_is_public_and_filtered(self):
+        cache_source = ContentSource.objects.create(
+            name="Open Image Source",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://example.com/open-images.json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+            license_name="Creative Commons Zero (CC0)",
+            license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+        )
+        ContentSource.objects.create(
+            name="Inactive Open Image Source",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://example.com/inactive-open-images.json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+            is_active=False,
+        )
+
+        response = APIClient().get("/api/sources/cache-allowed/")
+
+        self.assertEqual(response.status_code, 200)
+        names = {source["name"] for source in response.json()}
+        self.assertIn(cache_source.name, names)
+        self.assertNotIn("Daily World News", names)
+        self.assertNotIn("Inactive Open Image Source", names)
+
+    def test_seed_defaults_creates_at_least_50_cache_allowed_sources(self):
+        call_command("seed_defaults", stdout=StringIO())
+
+        cache_allowed_count = ContentSource.objects.filter(
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+            is_active=True,
+        ).count()
+
+        self.assertGreaterEqual(cache_allowed_count, 50)
+        self.assertFalse(
+            ContentSource.objects.filter(
+                name="Daily Meme Digest",
+                policy=ContentSource.POLICY_CACHE_ALLOWED,
+                is_active=True,
+            ).exists()
+        )
 
     @override_settings(REDIS_URL=None)
     def test_redis_health_reports_unavailable_without_url(self):

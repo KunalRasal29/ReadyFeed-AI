@@ -108,6 +108,12 @@ export default function Subscriptions() {
                   <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {source.type} · {source.policy.replace("_", " ")}
                   </p>
+                  {source.license_name ? (
+                    <p className="mt-2 text-xs font-medium text-teal-700">
+                      {source.license_name}
+                      {source.attribution_required ? " · attribution needed" : ""}
+                    </p>
+                  ) : null}
                 </div>
                 <span
                   className={[
@@ -122,6 +128,9 @@ export default function Subscriptions() {
               </div>
 
               <p className="mt-4 break-all text-sm text-slate-600">{source.feed_url}</p>
+              {source.usage_notes ? (
+                <p className="mt-3 text-sm text-slate-500">{source.usage_notes}</p>
+              ) : null}
 
               <button
                 type="button"

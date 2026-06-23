@@ -17,9 +17,17 @@ class UserPreferenceAdmin(admin.ModelAdmin):
 
 @admin.register(ContentSource)
 class ContentSourceAdmin(admin.ModelAdmin):
-    list_display = ("name", "type", "policy", "is_active", "created_at")
-    list_filter = ("type", "policy", "is_active")
-    search_fields = ("name", "feed_url")
+    list_display = (
+        "name",
+        "type",
+        "policy",
+        "license_name",
+        "attribution_required",
+        "is_active",
+        "created_at",
+    )
+    list_filter = ("type", "policy", "license_name", "attribution_required", "is_active")
+    search_fields = ("name", "feed_url", "license_name", "usage_notes")
 
 
 @admin.register(Subscription)

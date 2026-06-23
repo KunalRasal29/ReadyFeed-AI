@@ -263,6 +263,11 @@ export default function Register() {
                       <span className="mt-1 block text-xs uppercase tracking-wide text-slate-500">
                         {source.type} · {source.policy.replace("_", " ")}
                       </span>
+                      {source.license_name ? (
+                        <span className="mt-2 block text-xs font-medium text-teal-700">
+                          {source.license_name}
+                        </span>
+                      ) : null}
                     </button>
                   );
                 })

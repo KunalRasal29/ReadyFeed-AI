@@ -25,12 +25,16 @@ class ContentSource(models.Model):
     TYPE_VIDEO = "video"
     TYPE_MEME = "meme"
     TYPE_NEWS = "news"
+    TYPE_IMAGE = "image"
+    TYPE_BOOK = "book"
     TYPE_CHOICES = [
         (TYPE_PODCAST, "Podcast"),
         (TYPE_ARTICLE, "Article"),
         (TYPE_VIDEO, "Video"),
         (TYPE_MEME, "Meme"),
         (TYPE_NEWS, "News"),
+        (TYPE_IMAGE, "Image"),
+        (TYPE_BOOK, "Book"),
     ]
 
     POLICY_METADATA_ONLY = "metadata_only"
@@ -49,6 +53,10 @@ class ContentSource(models.Model):
         default=POLICY_METADATA_ONLY,
     )
     is_active = models.BooleanField(default=True)
+    license_name = models.CharField(max_length=120, blank=True)
+    license_url = models.URLField(max_length=500, blank=True)
+    attribution_required = models.BooleanField(default=False)
+    usage_notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

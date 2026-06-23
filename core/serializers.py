@@ -79,6 +79,10 @@ class ContentSourceSerializer(serializers.ModelSerializer):
             "feed_url",
             "policy",
             "is_active",
+            "license_name",
+            "license_url",
+            "attribution_required",
+            "usage_notes",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]

@@ -180,6 +180,12 @@ class ContentSourceViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(is_active=True)
         return queryset
 
+    @action(detail=False, methods=["get"], url_path="cache-allowed")
+    def cache_allowed(self, request):
+        queryset = self.get_queryset().filter(policy=ContentSource.POLICY_CACHE_ALLOWED)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
     serializer_class = SubscriptionSerializer

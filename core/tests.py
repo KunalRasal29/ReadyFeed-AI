@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import CommuteWindow, ContentSource, DownloadItem, Subscription
@@ -60,6 +60,8 @@ class ApiRoutePermissionTests(TestCase):
             ("get", "/api/preferences/"),
             ("get", "/api/downloads/"),
             ("get", "/api/commute/"),
+            ("get", "/api/system/redis-health/"),
+            ("post", "/api/system/cache-test/"),
         ]
         for method, path in protected_routes:
             response = getattr(client, method)(path)
@@ -132,3 +134,37 @@ class ApiRoutePermissionTests(TestCase):
             "http://localhost:5173",
         )
         self.assertEqual(response["access-control-allow-credentials"], "true")
+
+    @override_settings(REDIS_URL=None)
+    def test_redis_health_reports_unavailable_without_url(self):
+        client = APIClient()
+        client.login(username="route_user", password="test-password-123")
+
+        response = client.get("/api/system/redis-health/")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["redis"], "unavailable")
+
+    @override_settings(
+        REDIS_URL=None,
+        CACHES={
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "test-cache",
+            }
+        },
+    )
+    def test_cache_test_endpoint_works_with_fallback_cache(self):
+        client = APIClient()
+        client.login(username="route_user", password="test-password-123")
+
+        response = client.post("/api/system/cache-test/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "cache": "working",
+                "value": "hello from redis",
+            },
+        )

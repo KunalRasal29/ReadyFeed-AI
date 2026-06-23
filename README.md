@@ -2,14 +2,15 @@
 
 READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, and view placeholder download status screens.
 
-This phase is intentionally limited to the Django + React foundation. It does not include AI, Celery, Redis, ETL jobs, WebSockets, Docker, or deployment.
+This phase is intentionally limited to the Django + React foundation plus Redis connection checks and Django cache setup. It does not include AI, Celery, ETL jobs, WebSockets, Docker, S3, AutoGen, or deployment.
 
 ## Tech Stack
 
-- Backend: Django, Django REST Framework, SQLite
+- Backend: Django, Django REST Framework, PostgreSQL with SQLite fallback
 - Auth: Django session authentication with CSRF protection
 - Cross-origin/local dev: django-cors-headers
 - Environment variables: python-dotenv
+- Cache/broker foundation: Redis with django-redis
 - Frontend: React, Vite, React Router, Axios, Zustand
 - Styling: Tailwind CSS
 
@@ -45,11 +46,270 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
+If you have not created the PostgreSQL database yet, comment out or remove `DATABASE_URL` in `.env` before running `migrate`. Without `DATABASE_URL`, Django uses SQLite fallback.
+
 Backend URLs:
 
 - Admin: `http://localhost:8000/admin/`
 - Public sources API: `http://localhost:8000/api/sources/`
 - API base: `http://localhost:8000/api/`
+
+## PostgreSQL Local Setup
+
+Django reads `DATABASE_URL` from `.env`. If `DATABASE_URL` exists, Django uses PostgreSQL. If it is missing or commented out, Django falls back to local SQLite at `db.sqlite3`.
+
+Expected format:
+
+```env
+DATABASE_URL=postgres://DB_USER:DB_PASSWORD@localhost:5432/DB_NAME
+```
+
+Local example:
+
+```env
+DATABASE_URL=postgres://readyfeed_user:readyfeed_password@localhost:5432/readyfeed_db
+```
+
+### macOS With Homebrew
+
+Install and start PostgreSQL:
+
+```bash
+brew install postgresql
+brew services start postgresql
+```
+
+Open PostgreSQL:
+
+```bash
+psql postgres
+```
+
+Create the database user and database:
+
+```sql
+CREATE USER readyfeed_user WITH PASSWORD 'readyfeed_password';
+CREATE DATABASE readyfeed_db OWNER readyfeed_user;
+GRANT ALL PRIVILEGES ON DATABASE readyfeed_db TO readyfeed_user;
+\q
+```
+
+Put this in `.env`:
+
+```env
+DATABASE_URL=postgres://readyfeed_user:readyfeed_password@localhost:5432/readyfeed_db
+```
+
+Then run:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py makemigrations
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py seed_defaults
+python manage.py runserver
+```
+
+### Windows
+
+Install PostgreSQL from the official installer, then open SQL Shell (`psql`) or pgAdmin.
+
+In `psql`:
+
+```sql
+CREATE USER readyfeed_user WITH PASSWORD 'readyfeed_password';
+CREATE DATABASE readyfeed_db OWNER readyfeed_user;
+GRANT ALL PRIVILEGES ON DATABASE readyfeed_db TO readyfeed_user;
+```
+
+Set this in `.env`:
+
+```env
+DATABASE_URL=postgres://readyfeed_user:readyfeed_password@localhost:5432/readyfeed_db
+```
+
+If `migrate` fails with `connection refused` or `database does not exist`, PostgreSQL is not running yet or the database/user commands have not been run.
+
+### Linux
+
+Ubuntu/Debian example:
+
+```bash
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo -u postgres psql
+```
+
+In `psql`:
+
+```sql
+CREATE USER readyfeed_user WITH PASSWORD 'readyfeed_password';
+CREATE DATABASE readyfeed_db OWNER readyfeed_user;
+GRANT ALL PRIVILEGES ON DATABASE readyfeed_db TO readyfeed_user;
+\q
+```
+
+Set this in `.env`:
+
+```env
+DATABASE_URL=postgres://readyfeed_user:readyfeed_password@localhost:5432/readyfeed_db
+```
+
+## Verify Database Connection
+
+Check which database engine Django is using:
+
+```bash
+source .venv/bin/activate
+python manage.py shell -c "from django.conf import settings; print(settings.DATABASES['default']['ENGINE']); print(settings.DATABASES['default']['NAME'])"
+```
+
+Expected PostgreSQL engine:
+
+```text
+django.db.backends.postgresql
+```
+
+Open Django's database shell:
+
+```bash
+python manage.py dbshell
+```
+
+Or verify migrations directly in PostgreSQL:
+
+```bash
+psql postgres://readyfeed_user:readyfeed_password@localhost:5432/readyfeed_db
+```
+
+Then:
+
+```sql
+\dt
+SELECT app, name FROM django_migrations ORDER BY applied DESC LIMIT 10;
+```
+
+## Redis Local Setup
+
+Django reads `REDIS_URL` from `.env`. If `REDIS_URL` exists, Django uses Redis for the default cache through `django-redis`. If it is missing or commented out, Django falls back to local memory cache.
+
+Expected local value:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+```
+
+### macOS With Homebrew
+
+Install and start Redis:
+
+```bash
+brew install redis
+brew services start redis
+```
+
+Test Redis:
+
+```bash
+redis-cli ping
+```
+
+Expected response:
+
+```text
+PONG
+```
+
+### Windows
+
+Use Redis through WSL, Memurai, or another Windows-compatible Redis distribution. After it is running, confirm the URL in `.env` is:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+```
+
+### Linux
+
+Ubuntu/Debian example:
+
+```bash
+sudo apt update
+sudo apt install redis-server
+sudo systemctl start redis-server
+redis-cli ping
+```
+
+## Verify Redis From Django
+
+Install dependencies and start Django:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py runserver
+```
+
+The Redis endpoints require an authenticated Django session. You can log in from the React app and call these URLs in the browser, or test with curl.
+
+Curl login example:
+
+```bash
+curl -i -c cookies.txt -b cookies.txt \
+  -H "Content-Type: application/json" \
+  -d '{"username":"Sharayu","password":"your-password"}' \
+  http://localhost:8000/api/auth/login/
+```
+
+Read the CSRF token from the cookie file:
+
+```bash
+CSRF=$(awk '$6 == "csrftoken" {print $7}' cookies.txt | tail -1)
+```
+
+Health check:
+
+```bash
+curl -b cookies.txt http://localhost:8000/api/system/redis-health/
+```
+
+Expected when Redis is running:
+
+```json
+{
+  "redis": "connected",
+  "ping": true
+}
+```
+
+Expected when Redis is unavailable:
+
+```json
+{
+  "redis": "unavailable",
+  "error": "..."
+}
+```
+
+Cache test:
+
+```bash
+curl -b cookies.txt \
+  -H "X-CSRFToken: $CSRF" \
+  -X POST \
+  http://localhost:8000/api/system/cache-test/
+```
+
+Expected response:
+
+```json
+{
+  "cache": "working",
+  "value": "hello from redis"
+}
+```
 
 ## Frontend Setup
 
@@ -102,6 +362,8 @@ Requires login:
 - `GET|POST /api/subscriptions/`
 - `GET|POST /api/downloads/`
 - `GET|POST /api/commute/`
+- `GET /api/system/redis-health/`
+- `POST /api/system/cache-test/`
 
 Compatibility route:
 

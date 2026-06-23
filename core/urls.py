@@ -8,7 +8,9 @@ from core.views import (
     LoginView,
     LogoutView,
     MeView,
+    CacheTestView,
     RegisterView,
+    RedisHealthView,
     SubscriptionViewSet,
     UserPreferenceViewSet,
 )
@@ -27,5 +29,7 @@ urlpatterns = [
     path("auth/login/", LoginView.as_view(), name="auth-login"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("auth/me/", MeView.as_view(), name="auth-me"),
+    path("system/redis-health/", RedisHealthView.as_view(), name="redis-health"),
+    path("system/cache-test/", CacheTestView.as_view(), name="cache-test"),
     path("", include(router.urls)),
 ]

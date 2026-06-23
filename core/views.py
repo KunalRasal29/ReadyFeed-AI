@@ -1,6 +1,10 @@
 from django.contrib.auth import login, logout
+from django.conf import settings
+from django.core.cache import cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.utils.decorators import method_decorator
+from redis import RedisError
+from redis import from_url as redis_from_url
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -59,6 +63,80 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user).data)
+
+
+class RedisHealthView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        redis_url = getattr(settings, "REDIS_URL", None)
+        if not redis_url:
+            return Response(
+                {
+                    "redis": "unavailable",
+                    "error": "REDIS_URL is not configured.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            client = redis_from_url(
+                redis_url,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            ping_result = client.ping()
+        except (RedisError, ValueError) as exc:
+            return Response(
+                {
+                    "redis": "unavailable",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                "redis": "connected",
+                "ping": bool(ping_result),
+            }
+        )
+
+
+class CacheTestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        cache_key = f"cache-test:{request.user.pk}"
+        cache_value = "hello from redis"
+
+        try:
+            cache.set(cache_key, cache_value, timeout=60)
+            returned_value = cache.get(cache_key)
+        except Exception as exc:
+            return Response(
+                {
+                    "cache": "unavailable",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if returned_value != cache_value:
+            return Response(
+                {
+                    "cache": "unavailable",
+                    "error": "Cache read did not match the written value.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        return Response(
+            {
+                "cache": "working",
+                "value": returned_value,
+            }
+        )
 
 
 class UserPreferenceViewSet(viewsets.ModelViewSet):

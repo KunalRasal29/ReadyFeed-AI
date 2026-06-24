@@ -1,8 +1,8 @@
 # READYFEED AI
 
-READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, and prepare starter offline content packages.
+READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, discover cache-allowed items, and prepare real downloaded files for offline use.
 
-This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, and a Celery worker task for preparing offline download items. It does not include AI, ETL feed ingestion, WebSockets, Docker, S3, AutoGen, or deployment.
+This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, Celery discovery tasks, and real offline file downloads from cache-allowed sources. It does not include AI, WebSockets, Docker, S3, AutoGen, or deployment.
 
 ## Tech Stack
 
@@ -316,7 +316,7 @@ Expected response:
 
 ## Celery Local Setup
 
-Celery is wired to Django and uses Redis as the broker and result backend. The first real task prepares a `DownloadItem` for offline use by writing a small local package under `media/offline_items/`, then updating its status, file path, and file size in the database.
+Celery is wired to Django and uses Redis as the broker and result backend. The prepare task downloads a `DownloadItem.media_url` from cache-allowed sources into `media/offline_items/`, then updates its status, file path, and file size in the database.
 
 Make sure Redis is running first:
 
@@ -387,19 +387,25 @@ from core.models import ContentSource, DownloadItem
 
 User = get_user_model()
 user = User.objects.get(username="Sharayu")
-source = ContentSource.objects.filter(is_active=True).first()
+source = ContentSource.objects.filter(
+    is_active=True,
+    policy=ContentSource.POLICY_CACHE_ALLOWED,
+).first()
 
 item = DownloadItem.objects.create(
     user=user,
     source=source,
-    title="Morning offline brief",
-    description="A local test item prepared by Celery.",
-    original_url="https://example.com/morning-offline-brief",
+    title="Manual offline test",
+    description="Use a media URL from a cache-allowed source preview.",
+    original_url="https://example.com/original-item-page",
+    media_url="https://example.com/cache-allowed-media-file.jpg",
 )
 item.id
 ```
 
-Then either open the React Downloads page and click `Prepare`, or call the API:
+Replace `media_url` with a real URL you are allowed to cache. The normal app flow is easier: use Subscriptions `Preview`, then `Discover`, then open Downloads and click `Prepare`.
+
+You can also call the API:
 
 ```bash
 curl -b cookies.txt \
@@ -423,6 +429,8 @@ Expected status:
 'ready'
 ```
 
+The prepared file is served locally from `/media/...` while `DEBUG=True`, and the React Downloads page shows an `Open` link for ready items.
+
 ### Discover Items From Supported Sources
 
 Supported sources can be previewed without saving anything:
@@ -440,13 +448,13 @@ POST /api/sources/{source_id}/discover/
 The normal flow is:
 
 1. Open `http://localhost:5173/subscriptions`.
-2. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` source.
+2. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, `Art Institute Chicago Public Domain - ...`, or `Library of Congress Free to Use - ...` source.
 3. Click `Preview` to inspect sample items.
 4. Click `Discover` to queue source discovery.
 5. Open `http://localhost:5173/downloads`.
 6. Click `Prepare` on discovered queued items.
 
-Discovery currently supports Wikimedia Commons, NASA Images, Gutendex / Project Gutenberg, The Met Open Access, and Art Institute Chicago sources. The adapters capture item-level author/license/source metadata in each `DownloadItem.description` and only create items when the returned file metadata appears cache-compatible.
+Discovery currently supports Wikimedia Commons, NASA Images, Gutendex / Project Gutenberg, The Met Open Access, Art Institute Chicago, and Library of Congress sources. The adapters capture item-level author/license/source metadata in each `DownloadItem.description` and only create items when the returned file metadata appears cache-compatible.
 
 ## Frontend Setup
 
@@ -610,7 +618,7 @@ celery -A readyfeed_ai worker -l info
 
 Preview says discovery is only available for certain source types:
 
-Use one of the seeded `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` sources. Other cache-allowed APIs are listed now but do not have ingestion adapters yet.
+Use one of the seeded `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, `Art Institute Chicago Public Domain - ...`, or `Library of Congress Free to Use - ...` sources. Other cache-allowed APIs are listed now but do not have ingestion adapters yet.
 
 Discover says the task could not be queued:
 
@@ -649,10 +657,10 @@ npm run build
 8. Confirm the dashboard shows the username and selected topics.
 9. Open Preferences and update topics, max daily items, and max storage.
 10. Open Subscriptions and subscribe to a source.
-11. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, or `Art Institute Chicago Public Domain - ...` source and click Preview.
+11. Find a `Wikimedia Commons Memes - ...`, `NASA Images - ...`, `Gutendex Public Domain Books - ...`, `The Met Open Access - ...`, `Art Institute Chicago Public Domain - ...`, or `Library of Congress Free to Use - ...` source and click Preview.
 12. Click Discover and wait for the Celery worker to create queued downloads.
 13. Open Downloads and confirm discovered items appear as queued.
-14. Click Prepare on one queued item and confirm it becomes ready.
+14. Click Prepare on one queued item and confirm it becomes ready with a file size and Open link.
 15. Confirm the subscription button/status updates immediately.
 16. Unsubscribe from the same source.
 17. Log out.

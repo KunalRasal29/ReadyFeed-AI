@@ -323,6 +323,18 @@ class DownloadItemViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_202_ACCEPTED,
             )
 
+        if download_item.source.policy != ContentSource.POLICY_CACHE_ALLOWED:
+            return Response(
+                {"detail": "This source is metadata-only and cannot be cached."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not download_item.media_url:
+            return Response(
+                {"detail": "This item does not have a downloadable media URL."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         try:
             async_result = prepare_download_item.delay(download_item.pk)
         except Exception as exc:

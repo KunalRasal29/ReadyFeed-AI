@@ -1,13 +1,27 @@
+import mimetypes
+import re
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from celery import shared_task
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from core.ingestion.adapters import fetch_source_items
 from core.models import ContentSource, DownloadItem
+
+
+DOWNLOAD_CHUNK_SIZE = 1024 * 64
+DOWNLOAD_TIMEOUT_SECONDS = 30
+USER_AGENT = "READYFEED-AI/0.1 local-development"
+
+
+class OfflineDownloadError(Exception):
+    pass
 
 
 @shared_task
@@ -57,7 +71,7 @@ def discover_source_items(self, source_id, user_id, limit=10):
 
 @shared_task(bind=True)
 def prepare_download_item(self, download_item_id):
-    """Prepare a DownloadItem for offline use without fetching remote media yet."""
+    """Download the item's cache-allowed media file for offline use."""
     try:
         with transaction.atomic():
             download_item = (
@@ -84,45 +98,7 @@ def prepare_download_item(self, download_item_id):
             download_item.error_message = ""
             download_item.save(update_fields=["status", "error_message", "updated_at"])
 
-        output_dir = Path(settings.MEDIA_ROOT) / "offline_items" / str(download_item.user_id)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"download-{download_item.id}.txt"
-
-        prepared_at = timezone.now()
-        media_note = "No media URL was provided."
-        if download_item.media_url and download_item.source.policy == ContentSource.POLICY_CACHE_ALLOWED:
-            media_note = "Media URL recorded for a future cache/download pipeline."
-        elif download_item.media_url:
-            media_note = "Media URL recorded as metadata only because this source does not allow caching."
-
-        content = "\n".join(
-            [
-                "READYFEED AI Offline Content Package",
-                f"Prepared at: {prepared_at.isoformat()}",
-                f"Task id: {self.request.id or 'eager'}",
-                "",
-                f"Title: {download_item.title}",
-                f"Source: {download_item.source.name}",
-                f"Source type: {download_item.source.type}",
-                f"Source policy: {download_item.source.policy}",
-                f"Original URL: {download_item.original_url}",
-                f"Media URL: {download_item.media_url or 'None'}",
-                "",
-                "Description:",
-                download_item.description or "No description provided.",
-                "",
-                "Offline preparation note:",
-                media_note,
-                "",
-            ]
-        )
-        output_path.write_text(content, encoding="utf-8")
-        file_size_bytes = output_path.stat().st_size
-
-        try:
-            stored_path = str(output_path.relative_to(settings.BASE_DIR))
-        except ValueError:
-            stored_path = str(output_path)
+        stored_path, file_size_bytes = _download_media_file(download_item)
 
         DownloadItem.objects.filter(pk=download_item_id).update(
             status=DownloadItem.STATUS_READY,
@@ -151,3 +127,157 @@ def prepare_download_item(self, download_item_id):
             updated_at=timezone.now(),
         )
         raise
+
+
+def _download_media_file(download_item):
+    _validate_downloadable(download_item)
+
+    request = Request(download_item.media_url, headers={"User-Agent": USER_AGENT})
+    output_dir = Path(settings.MEDIA_ROOT) / "offline_items" / str(download_item.user_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    used_storage_bytes = _used_storage_bytes(
+        user_id=download_item.user_id,
+        exclude_download_item_id=download_item.id,
+    )
+    max_storage_bytes = _max_storage_bytes(download_item)
+    output_path = None
+    partial_path = None
+
+    try:
+        with urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            content_type = _response_content_type(response)
+            content_length = _response_content_length(response)
+
+            if content_length and used_storage_bytes + content_length > max_storage_bytes:
+                raise OfflineDownloadError(
+                    "Downloading this item would exceed your storage preference."
+                )
+
+            output_path = _output_path_for_download(
+                output_dir=output_dir,
+                download_item=download_item,
+                content_type=content_type,
+            )
+            partial_path = output_path.with_name(f"{output_path.name}.part")
+            bytes_written = 0
+
+            with partial_path.open("wb") as output_file:
+                while True:
+                    chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+
+                    bytes_written += len(chunk)
+                    if used_storage_bytes + bytes_written > max_storage_bytes:
+                        raise OfflineDownloadError(
+                            "Downloading this item would exceed your storage preference."
+                        )
+                    output_file.write(chunk)
+
+            if bytes_written <= 0:
+                raise OfflineDownloadError("The remote media file was empty.")
+
+            partial_path.replace(output_path)
+
+        return _stored_media_path(output_path), output_path.stat().st_size
+    except OfflineDownloadError:
+        _remove_partial_file(partial_path)
+        raise
+    except Exception as exc:
+        _remove_partial_file(partial_path)
+        raise OfflineDownloadError(f"Could not download media file: {exc}") from exc
+
+
+def _validate_downloadable(download_item):
+    if download_item.source.policy != ContentSource.POLICY_CACHE_ALLOWED:
+        raise OfflineDownloadError("This source is metadata-only and cannot be cached.")
+
+    if not download_item.media_url:
+        raise OfflineDownloadError("This item does not have a downloadable media URL.")
+
+    parsed_url = urlparse(download_item.media_url)
+    if parsed_url.scheme not in {"http", "https"}:
+        raise OfflineDownloadError("Only HTTP and HTTPS media URLs can be downloaded.")
+
+
+def _used_storage_bytes(user_id, exclude_download_item_id):
+    return (
+        DownloadItem.objects.filter(
+            user_id=user_id,
+            status=DownloadItem.STATUS_READY,
+        )
+        .exclude(pk=exclude_download_item_id)
+        .aggregate(total=Sum("file_size_bytes"))
+        .get("total")
+        or 0
+    )
+
+
+def _max_storage_bytes(download_item):
+    preference = getattr(download_item.user, "preference", None)
+    max_storage_mb = getattr(preference, "max_storage_mb", 500) or 0
+    return max_storage_mb * 1024 * 1024
+
+
+def _response_content_type(response):
+    get_content_type = getattr(response.headers, "get_content_type", None)
+    if callable(get_content_type):
+        return get_content_type()
+    return response.headers.get("Content-Type", "application/octet-stream").split(";")[0]
+
+
+def _response_content_length(response):
+    raw_value = response.headers.get("Content-Length")
+    if not raw_value:
+        return None
+
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _output_path_for_download(output_dir, download_item, content_type):
+    slug = _slugify(download_item.title)
+    extension = _extension_for_download(download_item.media_url, content_type)
+    return output_dir / f"download-{download_item.id}-{slug}{extension}"
+
+
+def _slugify(value):
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value or "").strip("-").lower()
+    return slug[:60] or "item"
+
+
+def _extension_for_download(media_url, content_type):
+    guessed = ""
+    if content_type and content_type != "application/octet-stream":
+        guessed = mimetypes.guess_extension(content_type) or ""
+
+    if guessed == ".jpe":
+        return ".jpg"
+    if guessed:
+        return guessed
+
+    suffix = Path(unquote(urlparse(media_url).path)).suffix.lower()
+    if suffix and re.match(r"^\.[a-z0-9]{1,10}$", suffix):
+        return suffix
+
+    return ".bin"
+
+
+def _stored_media_path(output_path):
+    try:
+        return str(output_path.relative_to(settings.MEDIA_ROOT))
+    except ValueError:
+        return str(output_path)
+
+
+def _remove_partial_file(path):
+    if not path:
+        return
+
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass

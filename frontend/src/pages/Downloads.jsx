@@ -13,7 +13,32 @@ function formatFileSize(bytes) {
     return `${bytes} B`;
   }
 
-  return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function canPrepareItem(item) {
+  return (
+    ["queued", "failed"].includes(item.status) &&
+    item.media_url &&
+    item.source_detail?.policy === "cache_allowed"
+  );
+}
+
+function unavailableReason(item) {
+  if (!["queued", "failed"].includes(item.status)) {
+    return "";
+  }
+  if (item.source_detail?.policy !== "cache_allowed") {
+    return "Metadata only";
+  }
+  if (!item.media_url) {
+    return "No media URL";
+  }
+  return "";
 }
 
 export default function Downloads() {
@@ -134,9 +159,21 @@ export default function Downloads() {
                   </p>
                 ) : null}
                 {item.local_file_path ? (
-                  <p className="mt-2 break-all text-xs font-medium text-emerald-700">
-                    Prepared file: {item.local_file_path}
-                  </p>
+                  <div className="mt-2 space-y-1">
+                    <p className="break-all text-xs font-medium text-emerald-700">
+                      Prepared file: {item.local_file_path}
+                    </p>
+                    {item.local_file_url ? (
+                      <a
+                        href={item.local_file_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex text-xs font-semibold text-teal-700 hover:text-teal-800"
+                      >
+                        Open downloaded file
+                      </a>
+                    ) : null}
+                  </div>
                 ) : null}
                 {item.file_size_bytes ? (
                   <p className="mt-1 text-xs text-slate-500">
@@ -153,7 +190,7 @@ export default function Downloads() {
                 <StatusBadge status={item.status} />
               </div>
               <div className="sm:justify-self-end">
-                {["queued", "failed"].includes(item.status) ? (
+                {canPrepareItem(item) ? (
                   <button
                     type="button"
                     className="btn-primary"
@@ -162,9 +199,19 @@ export default function Downloads() {
                   >
                     {pendingItemId === item.id ? "Queueing..." : "Prepare"}
                   </button>
+                ) : item.status === "ready" && item.local_file_url ? (
+                  <a
+                    href={item.local_file_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="btn-secondary inline-flex"
+                  >
+                    Open
+                  </a>
                 ) : (
                   <span className="text-sm text-slate-500">
-                    {item.status === "ready" ? "Ready" : "Worker running"}
+                    {unavailableReason(item) ||
+                      (item.status === "ready" ? "Ready" : "Worker running")}
                   </span>
                 )}
               </div>

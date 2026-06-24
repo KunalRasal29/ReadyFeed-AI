@@ -1,6 +1,6 @@
 from pathlib import Path
 import tempfile
-from io import StringIO
+from io import BytesIO, StringIO
 from unittest.mock import patch
 
 from django.conf import settings
@@ -11,10 +11,35 @@ from rest_framework.test import APIClient
 
 from core.ingestion.adapters import fetch_source_items
 from core.models import CommuteWindow, ContentSource, DownloadItem, Subscription
-from core.tasks import debug_task, discover_source_items, prepare_download_item
+from core.tasks import (
+    OfflineDownloadError,
+    debug_task,
+    discover_source_items,
+    prepare_download_item,
+)
 
 
 User = get_user_model()
+
+
+class FakeDownloadHeaders(dict):
+    def get_content_type(self):
+        return self.get("Content-Type", "application/octet-stream").split(";")[0]
+
+
+class FakeDownloadResponse:
+    def __init__(self, body, headers=None):
+        self.stream = BytesIO(body)
+        self.headers = FakeDownloadHeaders(headers or {})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self, size=-1):
+        return self.stream.read(size)
 
 
 class ApiRoutePermissionTests(TestCase):
@@ -502,6 +527,57 @@ class ApiRoutePermissionTests(TestCase):
         self.assertEqual(items[0]["license_name"], "Creative Commons Zero (CC0)")
         self.assertIn("ArtIC artwork ID: 27992", items[0]["description"])
 
+    def test_loc_adapter_normalizes_free_to_use_items(self):
+        source = ContentSource.objects.create(
+            name="Library of Congress Free to Use - Cats Test",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://www.loc.gov/free-to-use/cats/?fo=json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+            license_name="Library of Congress Free to Use and Reuse",
+            license_url="https://www.loc.gov/free-to-use/",
+        )
+        loc_response = {
+            "results": [
+                {
+                    "title": "Cat portrait",
+                    "date": "1900",
+                    "description": ["A cat portrait."],
+                    "rights": "No known restrictions on publication.",
+                    "subject": ["cats"],
+                    "creator": ["Library of Congress"],
+                    "image_url": [
+                        "https://www.loc.gov/static/images/fallback.jpg",
+                        (
+                            "https://www.loc.gov/pictures/item/12345/"
+                            "resource/cph.3g12345/preview.jpg"
+                        ),
+                    ],
+                    "url": "https://www.loc.gov/item/12345/",
+                }
+            ]
+        }
+
+        with patch("core.ingestion.loc._fetch_json", return_value=loc_response):
+            items = fetch_source_items(source, limit=5)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Cat portrait")
+        self.assertEqual(items[0]["original_url"], "https://www.loc.gov/item/12345/")
+        self.assertEqual(
+            items[0]["media_url"],
+            "https://www.loc.gov/pictures/item/12345/resource/cph.3g12345/preview.jpg",
+        )
+        self.assertEqual(
+            items[0]["license_name"],
+            "Library of Congress Free to Use and Reuse",
+        )
+        self.assertEqual(items[0]["author"], "Library of Congress")
+        self.assertIn(
+            "Discovered from a Library of Congress Free to Use and Reuse collection.",
+            items[0]["description"],
+        )
+        self.assertIn("No known restrictions on publication.", items[0]["description"])
+
     @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
     def test_discover_endpoint_queues_task_for_nasa_source(self):
         source = ContentSource.objects.create(
@@ -640,6 +716,42 @@ class ApiRoutePermissionTests(TestCase):
             ).exists()
         )
 
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=True)
+    def test_discover_endpoint_queues_task_for_loc_source(self):
+        source = ContentSource.objects.create(
+            name="Library of Congress Free to Use - Cats Test",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://www.loc.gov/free-to-use/cats/?fo=json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+            license_name="Library of Congress Free to Use and Reuse",
+        )
+        client = APIClient()
+        client.login(username="route_user", password="test-password-123")
+        fake_items = [
+            {
+                "title": "Cat portrait",
+                "description": "Discovered from a Library of Congress Free to Use and Reuse collection.",
+                "original_url": "https://www.loc.gov/item/12345/",
+                "media_url": (
+                    "https://www.loc.gov/pictures/item/12345/"
+                    "resource/cph.3g12345/preview.jpg"
+                ),
+            }
+        ]
+
+        with patch("core.tasks.fetch_source_items", return_value=fake_items):
+            response = client.post(f"/api/sources/{source.id}/discover/")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertTrue(
+            DownloadItem.objects.filter(
+                user=self.user,
+                source=source,
+                original_url=fake_items[0]["original_url"],
+                status=DownloadItem.STATUS_QUEUED,
+            ).exists()
+        )
+
     @override_settings(REDIS_URL=None)
     def test_redis_health_reports_unavailable_without_url(self):
         client = APIClient()
@@ -681,41 +793,110 @@ class ApiRoutePermissionTests(TestCase):
         self.assertEqual(result.get(timeout=5), "READYFEED Celery works")
 
     def test_prepare_download_task_creates_offline_file(self):
+        cache_source = ContentSource.objects.create(
+            name="Open Image Downloads",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://example.com/open-images.json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+        )
         download_item = DownloadItem.objects.create(
             user=self.user,
-            source=self.source,
-            title="Offline News Brief",
-            description="A short summary for the train.",
-            original_url="https://example.com/news/offline-brief",
+            source=cache_source,
+            title="Offline Cat Image",
+            description="A downloadable image for the train.",
+            original_url="https://example.com/images/offline-cat",
+            media_url="https://example.com/images/offline-cat.jpg",
         )
+        media_body = b"real offline image bytes"
 
         with tempfile.TemporaryDirectory() as media_root:
             with override_settings(
                 CELERY_TASK_ALWAYS_EAGER=True,
                 MEDIA_ROOT=Path(media_root),
             ):
-                result = prepare_download_item.delay(download_item.id)
+                with patch(
+                    "core.tasks.urlopen",
+                    return_value=FakeDownloadResponse(
+                        media_body,
+                        {
+                            "Content-Type": "image/jpeg",
+                            "Content-Length": str(len(media_body)),
+                        },
+                    ),
+                ):
+                    result = prepare_download_item.delay(download_item.id)
 
                 self.assertEqual(result.get(timeout=5)["status"], DownloadItem.STATUS_READY)
 
                 download_item.refresh_from_db()
-                prepared_path = Path(download_item.local_file_path)
-                if not prepared_path.is_absolute():
-                    prepared_path = settings.BASE_DIR / prepared_path
+                prepared_path = Path(settings.MEDIA_ROOT) / download_item.local_file_path
 
                 self.assertTrue(prepared_path.exists())
+                self.assertEqual(prepared_path.read_bytes(), media_body)
 
         self.assertEqual(download_item.status, DownloadItem.STATUS_READY)
-        self.assertGreater(download_item.file_size_bytes, 0)
+        self.assertEqual(download_item.file_size_bytes, len(media_body))
         self.assertEqual(download_item.error_message, "")
+        self.assertTrue(download_item.local_file_path.endswith(".jpg"))
 
-    def test_prepare_download_endpoint_queues_user_item(self):
+    def test_prepare_download_task_fails_when_storage_limit_is_exceeded(self):
+        self.user.preference.max_storage_mb = 0
+        self.user.preference.save(update_fields=["max_storage_mb", "updated_at"])
+        cache_source = ContentSource.objects.create(
+            name="Open Image Downloads",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://example.com/open-images.json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+        )
         download_item = DownloadItem.objects.create(
             user=self.user,
-            source=self.source,
-            title="Endpoint Prepared Item",
-            original_url="https://example.com/news/endpoint-prepared",
+            source=cache_source,
+            title="Large Offline Image",
+            original_url="https://example.com/images/large-image",
+            media_url="https://example.com/images/large-image.jpg",
         )
+        media_body = b"too large for zero storage"
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(
+                CELERY_TASK_ALWAYS_EAGER=True,
+                MEDIA_ROOT=Path(media_root),
+            ):
+                with patch(
+                    "core.tasks.urlopen",
+                    return_value=FakeDownloadResponse(
+                        media_body,
+                        {
+                            "Content-Type": "image/jpeg",
+                            "Content-Length": str(len(media_body)),
+                        },
+                    ),
+                ):
+                    result = prepare_download_item.delay(download_item.id)
+                    with self.assertRaises(OfflineDownloadError):
+                        result.get(timeout=5)
+
+        download_item.refresh_from_db()
+        self.assertEqual(download_item.status, DownloadItem.STATUS_FAILED)
+        self.assertIn("storage preference", download_item.error_message)
+        self.assertEqual(download_item.local_file_path, "")
+        self.assertIsNone(download_item.file_size_bytes)
+
+    def test_prepare_download_endpoint_queues_user_item(self):
+        cache_source = ContentSource.objects.create(
+            name="Open Image Downloads",
+            type=ContentSource.TYPE_IMAGE,
+            feed_url="https://example.com/open-images.json",
+            policy=ContentSource.POLICY_CACHE_ALLOWED,
+        )
+        download_item = DownloadItem.objects.create(
+            user=self.user,
+            source=cache_source,
+            title="Endpoint Prepared Item",
+            original_url="https://example.com/images/endpoint-prepared",
+            media_url="https://example.com/images/endpoint-prepared.png",
+        )
+        media_body = b"endpoint image bytes"
 
         client = APIClient()
         client.login(username="route_user", password="test-password-123")
@@ -725,13 +906,25 @@ class ApiRoutePermissionTests(TestCase):
                 CELERY_TASK_ALWAYS_EAGER=True,
                 MEDIA_ROOT=Path(media_root),
             ):
-                response = client.post(f"/api/downloads/{download_item.id}/prepare/")
+                with patch(
+                    "core.tasks.urlopen",
+                    return_value=FakeDownloadResponse(
+                        media_body,
+                        {
+                            "Content-Type": "image/png",
+                            "Content-Length": str(len(media_body)),
+                        },
+                    ),
+                ):
+                    response = client.post(f"/api/downloads/{download_item.id}/prepare/")
 
                 self.assertEqual(response.status_code, 202)
                 self.assertEqual(response.json()["detail"], "Offline preparation task queued.")
+                self.assertTrue(response.json()["download"]["local_file_url"])
 
         download_item.refresh_from_db()
         self.assertEqual(download_item.status, DownloadItem.STATUS_READY)
+        self.assertEqual(download_item.file_size_bytes, len(media_body))
 
     def test_prepare_download_endpoint_cannot_access_another_users_item(self):
         other_download = DownloadItem.objects.create(

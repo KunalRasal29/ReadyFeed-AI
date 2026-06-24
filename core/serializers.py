@@ -1,3 +1,6 @@
+from urllib.parse import quote
+
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
@@ -130,6 +133,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 
 class DownloadItemSerializer(serializers.ModelSerializer):
     source_detail = ContentSourceSerializer(source="source", read_only=True)
+    local_file_url = serializers.SerializerMethodField()
 
     class Meta:
         model = DownloadItem
@@ -143,6 +147,7 @@ class DownloadItemSerializer(serializers.ModelSerializer):
             "original_url",
             "media_url",
             "local_file_path",
+            "local_file_url",
             "file_size_bytes",
             "error_message",
             "status",
@@ -155,12 +160,28 @@ class DownloadItemSerializer(serializers.ModelSerializer):
             "user",
             "source_detail",
             "local_file_path",
+            "local_file_url",
             "file_size_bytes",
             "error_message",
             "status",
             "created_at",
             "updated_at",
         ]
+
+    def get_local_file_url(self, obj):
+        if not obj.local_file_path:
+            return ""
+
+        media_path = obj.local_file_path.replace("\\", "/").lstrip("/")
+        media_prefix = settings.MEDIA_URL.strip("/")
+        if media_prefix and media_path.startswith(f"{media_prefix}/"):
+            media_path = media_path[len(media_prefix) + 1 :]
+
+        url = f"{settings.MEDIA_URL.rstrip('/')}/{quote(media_path, safe='/')}"
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class CommuteWindowSerializer(serializers.ModelSerializer):

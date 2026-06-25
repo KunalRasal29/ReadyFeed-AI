@@ -26,7 +26,7 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 │   ├── src/api/           # Axios client and API error helpers
 │   ├── src/components/    # Layout, protected route, shared UI pieces
 │   ├── src/hooks/         # useAuth hook
-│   ├── src/pages/         # Login, Register, Dashboard, Subscriptions, Downloads, Preferences
+│   ├── src/pages/         # Login, Register, Dashboard, Subscriptions, Downloads, Commute, Preferences
 │   └── src/stores/        # Zustand auth store
 ├── readyfeed_ai/          # Django project settings and root URL config
 ├── docker/                # Container entrypoint scripts

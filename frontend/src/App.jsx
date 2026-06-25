@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useAuth } from "./hooks/useAuth";
+import Commute from "./pages/Commute";
 import Dashboard from "./pages/Dashboard";
 import Downloads from "./pages/Downloads";
 import Login from "./pages/Login";
@@ -33,6 +34,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/subscriptions" element={<Subscriptions />} />
         <Route path="/downloads" element={<Downloads />} />
+        <Route path="/commute" element={<Commute />} />
         <Route path="/preferences" element={<Preferences />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

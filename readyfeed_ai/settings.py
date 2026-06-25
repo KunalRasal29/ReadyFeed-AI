@@ -115,6 +115,16 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = os.getenv("TIME_ZONE", "UTC")
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60
+COMMUTE_PREP_LOOKAHEAD_HOURS = int(os.getenv("COMMUTE_PREP_LOOKAHEAD_HOURS", "4"))
+COMMUTE_PREP_SCAN_INTERVAL_MINUTES = int(
+    os.getenv("COMMUTE_PREP_SCAN_INTERVAL_MINUTES", "15")
+)
+CELERY_BEAT_SCHEDULE = {
+    "queue-commute-preparation": {
+        "task": "core.tasks.queue_commute_preparation",
+        "schedule": COMMUTE_PREP_SCAN_INTERVAL_MINUTES * 60.0,
+    },
+}
 
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -140,9 +150,16 @@ USE_TZ = True
 
 
 STATIC_URL = "static/"
-MEDIA_URL = "media/"
+MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+OFFLINE_FILE_STORAGE = os.getenv("OFFLINE_FILE_STORAGE", "local").lower()
+AWS_STORAGE_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "")
+AWS_S3_REGION_NAME = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
+AWS_S3_ENDPOINT_URL = os.getenv("AWS_S3_ENDPOINT_URL", "")
+AWS_S3_ADDRESSING_STYLE = os.getenv("AWS_S3_ADDRESSING_STYLE", "virtual")
+AWS_S3_PRESIGNED_EXPIRES = int(os.getenv("AWS_S3_PRESIGNED_EXPIRES", "3600"))
 
 
 REST_FRAMEWORK = {

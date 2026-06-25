@@ -1,6 +1,3 @@
-from urllib.parse import quote
-
-from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import serializers
 
@@ -12,6 +9,7 @@ from core.models import (
     Subscription,
     UserPreference,
 )
+from core.offline_storage import OfflineStorageError, offline_file_url
 
 
 User = get_user_model()
@@ -134,6 +132,7 @@ class SubscriptionSerializer(serializers.ModelSerializer):
 class DownloadItemSerializer(serializers.ModelSerializer):
     source_detail = ContentSourceSerializer(source="source", read_only=True)
     local_file_url = serializers.SerializerMethodField()
+    offline_file_url = serializers.SerializerMethodField()
 
     class Meta:
         model = DownloadItem
@@ -148,6 +147,9 @@ class DownloadItemSerializer(serializers.ModelSerializer):
             "media_url",
             "local_file_path",
             "local_file_url",
+            "offline_file_url",
+            "storage_backend",
+            "storage_key",
             "file_size_bytes",
             "error_message",
             "status",
@@ -161,6 +163,9 @@ class DownloadItemSerializer(serializers.ModelSerializer):
             "source_detail",
             "local_file_path",
             "local_file_url",
+            "offline_file_url",
+            "storage_backend",
+            "storage_key",
             "file_size_bytes",
             "error_message",
             "status",
@@ -169,19 +174,13 @@ class DownloadItemSerializer(serializers.ModelSerializer):
         ]
 
     def get_local_file_url(self, obj):
-        if not obj.local_file_path:
+        return self.get_offline_file_url(obj)
+
+    def get_offline_file_url(self, obj):
+        try:
+            return offline_file_url(obj, request=self.context.get("request"))
+        except OfflineStorageError:
             return ""
-
-        media_path = obj.local_file_path.replace("\\", "/").lstrip("/")
-        media_prefix = settings.MEDIA_URL.strip("/")
-        if media_prefix and media_path.startswith(f"{media_prefix}/"):
-            media_path = media_path[len(media_prefix) + 1 :]
-
-        url = f"{settings.MEDIA_URL.rstrip('/')}/{quote(media_path, safe='/')}"
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(url)
-        return url
 
 
 class CommuteWindowSerializer(serializers.ModelSerializer):

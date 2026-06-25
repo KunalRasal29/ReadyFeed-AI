@@ -90,6 +90,13 @@ class Subscription(models.Model):
 
 
 class DownloadItem(models.Model):
+    STORAGE_LOCAL = "local"
+    STORAGE_S3 = "s3"
+    STORAGE_CHOICES = [
+        (STORAGE_LOCAL, "Local media"),
+        (STORAGE_S3, "Amazon S3"),
+    ]
+
     STATUS_QUEUED = "queued"
     STATUS_DOWNLOADING = "downloading"
     STATUS_READY = "ready"
@@ -116,6 +123,12 @@ class DownloadItem(models.Model):
     original_url = models.URLField(max_length=1000)
     media_url = models.URLField(max_length=1000, blank=True)
     local_file_path = models.CharField(max_length=1000, blank=True)
+    storage_backend = models.CharField(
+        max_length=20,
+        choices=STORAGE_CHOICES,
+        default=STORAGE_LOCAL,
+    )
+    storage_key = models.CharField(max_length=1000, blank=True)
     file_size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     error_message = models.TextField(blank=True)
     status = models.CharField(

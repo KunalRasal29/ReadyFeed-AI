@@ -1,5 +1,7 @@
+from datetime import datetime, timedelta
 import mimetypes
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
@@ -12,12 +14,39 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from core.ingestion.adapters import fetch_source_items
-from core.models import ContentSource, DownloadItem
+from core.models import CommuteWindow, ContentSource, DownloadItem
+from core.offline_storage import configured_storage_backend, store_offline_file
 
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 64
 DOWNLOAD_TIMEOUT_SECONDS = 30
 USER_AGENT = "READYFEED-AI/0.1 local-development"
+WEEKDAY_ALIASES = {
+    "0": 0,
+    "mon": 0,
+    "monday": 0,
+    "1": 1,
+    "tue": 1,
+    "tues": 1,
+    "tuesday": 1,
+    "2": 2,
+    "wed": 2,
+    "wednesday": 2,
+    "3": 3,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "thursday": 3,
+    "4": 4,
+    "fri": 4,
+    "friday": 4,
+    "5": 5,
+    "sat": 5,
+    "saturday": 5,
+    "6": 6,
+    "sun": 6,
+    "sunday": 6,
+}
 
 
 class OfflineDownloadError(Exception):
@@ -70,6 +99,62 @@ def discover_source_items(self, source_id, user_id, limit=10):
 
 
 @shared_task(bind=True)
+def queue_commute_preparation(self):
+    now = timezone.now()
+    lookahead = timedelta(
+        hours=getattr(settings, "COMMUTE_PREP_LOOKAHEAD_HOURS", 4),
+    )
+    scan_window = timedelta(
+        minutes=getattr(settings, "COMMUTE_PREP_SCAN_INTERVAL_MINUTES", 15),
+    )
+    target_start = now + lookahead
+    target_end = target_start + scan_window
+    matched_windows = []
+    queued_download_ids = []
+
+    commute_windows = (
+        CommuteWindow.objects.filter(is_active=True)
+        .select_related("user", "user__preference")
+        .order_by("user_id", "start_time", "label")
+    )
+
+    for commute_window in commute_windows:
+        commute_start = _next_commute_start(commute_window, now)
+        if not commute_start:
+            continue
+
+        if not (target_start <= commute_start < target_end):
+            continue
+
+        max_items = getattr(commute_window.user.preference, "max_daily_items", 10) or 10
+        downloads = _queued_downloads_for_user(commute_window.user_id, limit=max_items)
+        download_ids = [download.id for download in downloads]
+
+        for download_id in download_ids:
+            prepare_download_item.delay(download_id)
+
+        matched_windows.append(
+            {
+                "commute_window_id": commute_window.id,
+                "user_id": commute_window.user_id,
+                "commute_start": commute_start.isoformat(),
+                "queued_download_ids": download_ids,
+            }
+        )
+        queued_download_ids.extend(download_ids)
+
+    return {
+        "task_id": self.request.id,
+        "lookahead_hours": getattr(settings, "COMMUTE_PREP_LOOKAHEAD_HOURS", 4),
+        "scan_window_minutes": getattr(settings, "COMMUTE_PREP_SCAN_INTERVAL_MINUTES", 15),
+        "matched_windows_count": len(matched_windows),
+        "queued_count": len(queued_download_ids),
+        "queued_download_ids": queued_download_ids,
+        "matched_windows": matched_windows,
+    }
+
+
+@shared_task(bind=True)
 def prepare_download_item(self, download_item_id):
     """Download the item's cache-allowed media file for offline use."""
     try:
@@ -98,12 +183,14 @@ def prepare_download_item(self, download_item_id):
             download_item.error_message = ""
             download_item.save(update_fields=["status", "error_message", "updated_at"])
 
-        stored_path, file_size_bytes = _download_media_file(download_item)
+        stored_file = _download_media_file(download_item)
 
         DownloadItem.objects.filter(pk=download_item_id).update(
             status=DownloadItem.STATUS_READY,
-            local_file_path=stored_path,
-            file_size_bytes=file_size_bytes,
+            local_file_path=stored_file.local_file_path,
+            storage_backend=stored_file.storage_backend,
+            storage_key=stored_file.storage_key,
+            file_size_bytes=stored_file.file_size_bytes,
             error_message="",
             updated_at=timezone.now(),
         )
@@ -111,8 +198,10 @@ def prepare_download_item(self, download_item_id):
         return {
             "download_item_id": download_item_id,
             "status": DownloadItem.STATUS_READY,
-            "local_file_path": stored_path,
-            "file_size_bytes": file_size_bytes,
+            "local_file_path": stored_file.local_file_path,
+            "storage_backend": stored_file.storage_backend,
+            "storage_key": stored_file.storage_key,
+            "file_size_bytes": stored_file.file_size_bytes,
         }
     except DownloadItem.DoesNotExist:
         return {
@@ -132,9 +221,17 @@ def prepare_download_item(self, download_item_id):
 def _download_media_file(download_item):
     _validate_downloadable(download_item)
 
-    request = Request(download_item.media_url, headers={"User-Agent": USER_AGENT})
+    if configured_storage_backend() == DownloadItem.STORAGE_S3:
+        with tempfile.TemporaryDirectory(prefix="readyfeed-offline-") as temp_dir:
+            return _download_media_file_to_directory(download_item, Path(temp_dir))
+
     output_dir = Path(settings.MEDIA_ROOT) / "offline_items" / str(download_item.user_id)
     output_dir.mkdir(parents=True, exist_ok=True)
+    return _download_media_file_to_directory(download_item, output_dir)
+
+
+def _download_media_file_to_directory(download_item, output_dir):
+    request = Request(download_item.media_url, headers={"User-Agent": USER_AGENT})
 
     used_storage_bytes = _used_storage_bytes(
         user_id=download_item.user_id,
@@ -180,7 +277,11 @@ def _download_media_file(download_item):
 
             partial_path.replace(output_path)
 
-        return _stored_media_path(output_path), output_path.stat().st_size
+        return store_offline_file(
+            file_path=output_path,
+            download_item=download_item,
+            content_type=content_type,
+        )
     except OfflineDownloadError:
         _remove_partial_file(partial_path)
         raise
@@ -199,6 +300,61 @@ def _validate_downloadable(download_item):
     parsed_url = urlparse(download_item.media_url)
     if parsed_url.scheme not in {"http", "https"}:
         raise OfflineDownloadError("Only HTTP and HTTPS media URLs can be downloaded.")
+
+
+def _queued_downloads_for_user(user_id, limit):
+    return list(
+        DownloadItem.objects.filter(
+            user_id=user_id,
+            status=DownloadItem.STATUS_QUEUED,
+            media_url__gt="",
+            source__policy=ContentSource.POLICY_CACHE_ALLOWED,
+        )
+        .select_related("source")
+        .order_by("-available_from", "-created_at")[:limit]
+    )
+
+
+def _next_commute_start(commute_window, now):
+    active_days = _normalized_weekdays(commute_window.days_of_week)
+    if not active_days:
+        return None
+
+    current_timezone = timezone.get_current_timezone()
+    local_now = timezone.localtime(now, current_timezone)
+
+    for day_offset in range(8):
+        candidate_date = local_now.date() + timedelta(days=day_offset)
+        if candidate_date.weekday() not in active_days:
+            continue
+
+        candidate = datetime.combine(candidate_date, commute_window.start_time)
+        if timezone.is_naive(candidate):
+            candidate = timezone.make_aware(candidate, current_timezone)
+
+        if candidate >= local_now:
+            return candidate.astimezone(now.tzinfo or current_timezone)
+
+    return None
+
+
+def _normalized_weekdays(days_of_week):
+    weekdays = set()
+    for day in days_of_week or []:
+        key = str(day).strip().lower()
+        if key in WEEKDAY_ALIASES:
+            weekdays.add(WEEKDAY_ALIASES[key])
+            continue
+
+        try:
+            numeric_day = int(day)
+        except (TypeError, ValueError):
+            continue
+
+        if 0 <= numeric_day <= 6:
+            weekdays.add(numeric_day)
+
+    return weekdays
 
 
 def _used_storage_bytes(user_id, exclude_download_item_id):
@@ -264,13 +420,6 @@ def _extension_for_download(media_url, content_type):
         return suffix
 
     return ".bin"
-
-
-def _stored_media_path(output_path):
-    try:
-        return str(output_path.relative_to(settings.MEDIA_ROOT))
-    except ValueError:
-        return str(output_path)
 
 
 def _remove_partial_file(path):

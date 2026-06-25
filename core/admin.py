@@ -39,9 +39,24 @@ class SubscriptionAdmin(admin.ModelAdmin):
 
 @admin.register(DownloadItem)
 class DownloadItemAdmin(admin.ModelAdmin):
-    list_display = ("title", "user", "source", "status", "available_from")
-    list_filter = ("status", "source__type")
-    search_fields = ("title", "description", "user__username", "source__name")
+    list_display = (
+        "title",
+        "user",
+        "source",
+        "status",
+        "storage_backend",
+        "file_size_bytes",
+        "available_from",
+    )
+    list_filter = ("status", "storage_backend", "source__type")
+    search_fields = (
+        "title",
+        "description",
+        "user__username",
+        "source__name",
+        "local_file_path",
+        "storage_key",
+    )
 
 
 @admin.register(CommuteWindow)

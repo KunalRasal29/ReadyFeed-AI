@@ -41,6 +41,17 @@ function unavailableReason(item) {
   return "";
 }
 
+function offlineFileUrl(item) {
+  return item.offline_file_url || item.local_file_url || "";
+}
+
+function storedFileLabel(item) {
+  if (item.storage_backend === "s3" && item.storage_key) {
+    return item.storage_key;
+  }
+  return item.local_file_path || "";
+}
+
 export default function Downloads() {
   const [downloads, setDownloads] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -144,78 +155,12 @@ export default function Downloads() {
             <span className="hidden sm:block">Action</span>
           </div>
           {downloads.map((item) => (
-            <article
+            <DownloadRow
               key={item.id}
-              className="grid gap-4 border-b border-slate-100 px-5 py-4 last:border-b-0 sm:grid-cols-[1fr_auto_auto] sm:items-start"
-            >
-              <div>
-                <h3 className="font-semibold text-slate-950">{item.title}</h3>
-                <p className="mt-1 text-sm text-slate-600">
-                  {item.source_detail?.name || "Unknown source"}
-                </p>
-                {item.description ? (
-                  <p className="mt-2 line-clamp-2 text-sm text-slate-500">
-                    {item.description}
-                  </p>
-                ) : null}
-                {item.local_file_path ? (
-                  <div className="mt-2 space-y-1">
-                    <p className="break-all text-xs font-medium text-emerald-700">
-                      Prepared file: {item.local_file_path}
-                    </p>
-                    {item.local_file_url ? (
-                      <a
-                        href={item.local_file_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex text-xs font-semibold text-teal-700 hover:text-teal-800"
-                      >
-                        Open downloaded file
-                      </a>
-                    ) : null}
-                  </div>
-                ) : null}
-                {item.file_size_bytes ? (
-                  <p className="mt-1 text-xs text-slate-500">
-                    Size: {formatFileSize(item.file_size_bytes)}
-                  </p>
-                ) : null}
-                {item.error_message ? (
-                  <p className="mt-2 text-sm font-medium text-red-700">
-                    {item.error_message}
-                  </p>
-                ) : null}
-              </div>
-              <div className="sm:justify-self-end">
-                <StatusBadge status={item.status} />
-              </div>
-              <div className="sm:justify-self-end">
-                {canPrepareItem(item) ? (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => handlePrepare(item)}
-                    disabled={pendingItemId === item.id}
-                  >
-                    {pendingItemId === item.id ? "Queueing..." : "Prepare"}
-                  </button>
-                ) : item.status === "ready" && item.local_file_url ? (
-                  <a
-                    href={item.local_file_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-secondary inline-flex"
-                  >
-                    Open
-                  </a>
-                ) : (
-                  <span className="text-sm text-slate-500">
-                    {unavailableReason(item) ||
-                      (item.status === "ready" ? "Ready" : "Worker running")}
-                  </span>
-                )}
-              </div>
-            </article>
+              item={item}
+              pendingItemId={pendingItemId}
+              onPrepare={handlePrepare}
+            />
           ))}
         </div>
       ) : (
@@ -227,5 +172,82 @@ export default function Downloads() {
         </div>
       )}
     </div>
+  );
+}
+
+function DownloadRow({ item, pendingItemId, onPrepare }) {
+  const fileUrl = offlineFileUrl(item);
+  const fileLabel = storedFileLabel(item);
+
+  return (
+    <article className="grid gap-4 border-b border-slate-100 px-5 py-4 last:border-b-0 sm:grid-cols-[1fr_auto_auto] sm:items-start">
+      <div>
+        <h3 className="font-semibold text-slate-950">{item.title}</h3>
+        <p className="mt-1 text-sm text-slate-600">
+          {item.source_detail?.name || "Unknown source"}
+        </p>
+        {item.description ? (
+          <p className="mt-2 line-clamp-2 text-sm text-slate-500">
+            {item.description}
+          </p>
+        ) : null}
+        {fileLabel ? (
+          <div className="mt-2 space-y-1">
+            <p className="break-all text-xs font-medium text-emerald-700">
+              Prepared file: {fileLabel}
+            </p>
+            {fileUrl ? (
+              <a
+                href={fileUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex text-xs font-semibold text-teal-700 hover:text-teal-800"
+              >
+                Open downloaded file
+              </a>
+            ) : null}
+          </div>
+        ) : null}
+        {item.file_size_bytes ? (
+          <p className="mt-1 text-xs text-slate-500">
+            Size: {formatFileSize(item.file_size_bytes)}
+          </p>
+        ) : null}
+        {item.error_message ? (
+          <p className="mt-2 text-sm font-medium text-red-700">
+            {item.error_message}
+          </p>
+        ) : null}
+      </div>
+      <div className="sm:justify-self-end">
+        <StatusBadge status={item.status} />
+      </div>
+      <div className="sm:justify-self-end">
+        {canPrepareItem(item) ? (
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => onPrepare(item)}
+            disabled={pendingItemId === item.id}
+          >
+            {pendingItemId === item.id ? "Queueing..." : "Prepare"}
+          </button>
+        ) : item.status === "ready" && fileUrl ? (
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="btn-secondary inline-flex"
+          >
+            Open
+          </a>
+        ) : (
+          <span className="text-sm text-slate-500">
+            {unavailableReason(item) ||
+              (item.status === "ready" ? "Ready" : "Worker running")}
+          </span>
+        )}
+      </div>
+    </article>
   );
 }

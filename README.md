@@ -2,7 +2,7 @@
 
 READYFEED AI is an offline content curator foundation. Users can register, log in, choose topics, subscribe to content sources, edit preferences, discover cache-allowed items, and prepare real downloaded files for offline use.
 
-This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, Celery discovery tasks, and real offline file downloads from cache-allowed sources. It does not include AI, WebSockets, Docker, S3, AutoGen, or deployment.
+This phase is intentionally limited to the Django + React foundation plus Redis connection checks, Django cache setup, Celery discovery tasks, real offline file downloads from cache-allowed sources, S3-backed offline storage, commute scheduling, and a local Docker Compose stack. It does not include AI, WebSockets, AutoGen, or deployment.
 
 ## Tech Stack
 
@@ -12,8 +12,10 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 - Environment variables: python-dotenv
 - Cache/broker foundation: Redis with django-redis
 - Background work: Celery with Redis broker/result backend
+- Offline media storage: local Django media folder or private Amazon S3 via boto3
 - Frontend: React, Vite, React Router, Axios, Zustand
 - Styling: Tailwind CSS
+- Local containers: Docker Compose for Django, React, PostgreSQL, Redis, Celery worker, and Celery Beat
 
 ## Folder Structure
 
@@ -27,6 +29,9 @@ This phase is intentionally limited to the Django + React foundation plus Redis 
 │   ├── src/pages/         # Login, Register, Dashboard, Subscriptions, Downloads, Preferences
 │   └── src/stores/        # Zustand auth store
 ├── readyfeed_ai/          # Django project settings and root URL config
+├── docker/                # Container entrypoint scripts
+├── docker-compose.yml     # Local full-stack Docker Compose setup
+├── Dockerfile             # Django/Celery image
 ├── manage.py
 ├── requirements.txt
 └── README.md
@@ -316,7 +321,7 @@ Expected response:
 
 ## Celery Local Setup
 
-Celery is wired to Django and uses Redis as the broker and result backend. The prepare task downloads a `DownloadItem.media_url` from cache-allowed sources into `media/offline_items/`, then updates its status, file path, and file size in the database.
+Celery is wired to Django and uses Redis as the broker and result backend. The prepare task downloads a `DownloadItem.media_url` from cache-allowed sources, stores it through the configured offline storage backend, then updates its status, storage location, and file size in the database. Celery Beat checks commute windows every 15 minutes and queues preparation about 4 hours before commute start time.
 
 Make sure Redis is running first:
 
@@ -345,7 +350,21 @@ source .venv/bin/activate
 celery -A readyfeed_ai worker -l info
 ```
 
-Test Celery from terminal 3:
+Start Celery Beat in terminal 3:
+
+```bash
+source .venv/bin/activate
+celery -A readyfeed_ai beat -l info
+```
+
+Beat timing is configured in `.env`:
+
+```env
+COMMUTE_PREP_LOOKAHEAD_HOURS=4
+COMMUTE_PREP_SCAN_INTERVAL_MINUTES=15
+```
+
+Test Celery from terminal 4:
 
 ```bash
 source .venv/bin/activate
@@ -369,6 +388,34 @@ Expected:
 ```
 
 If `result.get(timeout=10)` times out, check that Redis is running and the Celery worker terminal is still active.
+
+### Prepare Items Before A Commute
+
+Celery Beat runs `queue_commute_preparation` every `COMMUTE_PREP_SCAN_INTERVAL_MINUTES`. It looks for active `CommuteWindow` rows starting between:
+
+```text
+now + COMMUTE_PREP_LOOKAHEAD_HOURS
+and
+now + COMMUTE_PREP_LOOKAHEAD_HOURS + COMMUTE_PREP_SCAN_INTERVAL_MINUTES
+```
+
+For each matching commute window, it queues up to the user's `max_daily_items` queued downloads. Only cache-allowed downloads with a `media_url` are prepared.
+
+To manually test the scheduler from Django shell:
+
+```bash
+source .venv/bin/activate
+python manage.py shell
+```
+
+```python
+from core.tasks import queue_commute_preparation
+
+result = queue_commute_preparation.delay()
+result.get(timeout=10)
+```
+
+For an automatic test, create an active commute window whose `start_time` is roughly 4 hours from now and whose `days_of_week` includes today's weekday, then keep Redis, the Celery worker, and Celery Beat running.
 
 ### Prepare An Offline Download Item
 
@@ -431,6 +478,57 @@ Expected status:
 
 The prepared file is served locally from `/media/...` while `DEBUG=True`, and the React Downloads page shows an `Open` link for ready items.
 
+### Store Offline Media In S3
+
+Local storage is the default:
+
+```env
+OFFLINE_FILE_STORAGE=local
+```
+
+To upload prepared files to a private S3 bucket instead, install the latest requirements, migrate the new storage fields, and set S3 values in `.env`:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+```
+
+```env
+OFFLINE_FILE_STORAGE=s3
+AWS_STORAGE_BUCKET_NAME=readyfeed-ai-dev
+AWS_S3_REGION_NAME=ap-south-1
+AWS_S3_PRESIGNED_EXPIRES=3600
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+```
+
+Keep the bucket private. The backend uploads prepared files to keys like:
+
+```text
+offline_items/{user_id}/download-{download_id}-{title}.jpg
+```
+
+The Downloads API returns:
+
+```json
+{
+  "storage_backend": "s3",
+  "storage_key": "offline_items/7/download-12-example.jpg",
+  "offline_file_url": "temporary-presigned-s3-url"
+}
+```
+
+Minimum IAM permissions for the app user:
+
+```json
+{
+  "Action": ["s3:PutObject", "s3:GetObject"],
+  "Resource": "arn:aws:s3:::readyfeed-ai-dev/offline_items/*",
+  "Effect": "Allow"
+}
+```
+
 ### Discover Items From Supported Sources
 
 Supported sources can be previewed without saving anything:
@@ -489,6 +587,79 @@ npm run dev
 ```
 
 Use `http://localhost:5173/` for the app. Use `http://localhost:8000/admin/` only for Django admin.
+
+## Docker Compose Setup
+
+Install and start Docker Desktop before running these commands.
+
+The Docker stack runs:
+
+- `db`: PostgreSQL
+- `redis`: Redis
+- `backend`: Django API
+- `celery-worker`: Celery worker
+- `celery-beat`: commute scheduler
+- `frontend`: Vite React app
+
+Docker uses service hostnames internally:
+
+```text
+DATABASE_URL=postgres://readyfeed_user:readyfeed_password@db:5432/readyfeed_db
+REDIS_URL=redis://redis:6379/0
+```
+
+Host ports:
+
+```text
+React: http://localhost:5173
+Django: http://localhost:8000
+PostgreSQL from host: localhost:5433
+Redis from host: localhost:6380
+```
+
+Start the full stack:
+
+```bash
+docker compose up --build
+```
+
+Run a Django command inside the backend container:
+
+```bash
+docker compose exec backend python manage.py createsuperuser
+```
+
+Run tests:
+
+```bash
+docker compose exec backend python manage.py test
+```
+
+View logs:
+
+```bash
+docker compose logs -f backend
+docker compose logs -f celery-worker
+docker compose logs -f celery-beat
+```
+
+Stop containers:
+
+```bash
+docker compose down
+```
+
+Stop containers and remove local Docker data volumes:
+
+```bash
+docker compose down -v
+```
+
+If your `.env` contains `OFFLINE_FILE_STORAGE=s3`, Docker will use S3 for prepared files. If you want to test without AWS, set:
+
+```env
+OFFLINE_FILE_STORAGE=local
+```
 
 ## API Routes
 
@@ -624,6 +795,10 @@ Discover says the task could not be queued:
 
 Make sure Redis and the Celery worker are running. The Discover button creates `DownloadItem` rows in the worker, not in the browser request.
 
+Commute preparation is not happening automatically:
+
+Make sure Redis, the Celery worker, and Celery Beat are all running. Also confirm the commute window is active, its `days_of_week` includes today, and its `start_time` is about 4 hours away.
+
 Port already in use:
 
 Stop the old server process, or run Django/Vite on another port and update the Vite proxy if needed.
@@ -645,6 +820,12 @@ cd frontend
 npm run build
 ```
 
+Docker Compose config:
+
+```bash
+docker compose config
+```
+
 ## Manual Acceptance Checklist
 
 1. Start Django on `http://localhost:8000`.
@@ -661,7 +842,9 @@ npm run build
 12. Click Discover and wait for the Celery worker to create queued downloads.
 13. Open Downloads and confirm discovered items appear as queued.
 14. Click Prepare on one queued item and confirm it becomes ready with a file size and Open link.
-15. Confirm the subscription button/status updates immediately.
-16. Unsubscribe from the same source.
-17. Log out.
-18. Log in again and confirm the session and saved data still work.
+15. Create or update an active commute window about 4 hours from now.
+16. Start Celery Beat and confirm it queues preparation automatically.
+17. Confirm the subscription button/status updates immediately.
+18. Unsubscribe from the same source.
+19. Log out.
+20. Log in again and confirm the session and saved data still work.
